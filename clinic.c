@@ -112,6 +112,18 @@ typedef struct {
     int direct_admission; // NEW: Flag for direct emergency admit (waives first fee)
 } VisitRecord;
 
+// Standalone Pharmacy Database
+typedef struct {
+    char sale_id[ID_LEN];
+    char patient_id[ID_LEN]; // "WALK-IN" or Patient ID
+    char name[MAX_STR];
+    char contact[20];
+    char email[MAX_STR];     // "NA" for walk-ins
+    char medicines[200];
+    double cost;
+    char date[30];
+} PharmacySale;
+
 // The Master RAM Database
 typedef struct {
     Admin *admins;              int admin_count;    int admin_cap;
@@ -120,6 +132,7 @@ typedef struct {
     LabAssistant *lab_assts;    int lab_count;      int lab_cap;
     Patient *patients;          int pat_count;      int pat_cap;
     VisitRecord *visits;        int visit_count;    int visit_cap;
+    PharmacySale *pharmacy_sales; int pharm_count;  int pharm_cap;
 } Database;
 
 // ==========================================
@@ -129,6 +142,10 @@ void addAdminToDB(Database *db, Admin a);
 void addEmployeeToDB(Database *db, Employee e);
 void addDoctorToDB(Database *db, Doctor d);
 void addLabAsstToDB(Database *db, LabAssistant l);
+void addPatientToDB(Database *db, Patient p);
+void addVisitToDB(Database *db, VisitRecord v);
+void addPharmacySaleToDB(Database *db, PharmacySale ps);
+void viewPharmacyDatabase(Database *db);
 
 // ==========================================
 // 3. SECURITY & UTILITY ENGINE
@@ -306,12 +323,15 @@ void freeDatabase(Database *db) {
     if (db->lab_assts) free(db->lab_assts);
     if (db->patients) free(db->patients);
     if (db->visits) free(db->visits);
+    if (db->pharmacy_sales) free(db->pharmacy_sales);
 
     db->admins = NULL; db->employees = NULL; db->doctors = NULL;
     db->lab_assts = NULL; db->patients = NULL; db->visits = NULL;
+    db->pharmacy_sales = NULL;
 
     db->admin_count = 0; db->emp_count = 0; db->doc_count = 0;
     db->lab_count = 0; db->pat_count = 0; db->visit_count = 0;
+    db->pharm_count = 0;
 }
 
 // ==========================================
@@ -343,6 +363,20 @@ void addVisitToDB(Database *db, VisitRecord v) {
         db->visit_cap = new_cap;
     }
     db->visits[db->visit_count++] = v;
+}
+
+void addPharmacySaleToDB(Database *db, PharmacySale ps) {
+    if (db->pharm_count >= db->pharm_cap) {
+        int new_cap = (db->pharm_cap == 0) ? 10 : db->pharm_cap * 2;
+        PharmacySale *temp = (PharmacySale *)realloc(db->pharmacy_sales, new_cap * sizeof(PharmacySale));
+        if (!temp) {
+            printf("\n[FATAL ERROR] Out of memory. Cannot add Pharmacy Sale.\n");
+            return;
+        }
+        db->pharmacy_sales = temp;
+        db->pharm_cap = new_cap;
+    }
+    db->pharmacy_sales[db->pharm_count++] = ps;
 }
 
 // ==========================================
@@ -461,6 +495,22 @@ void loadDatabase(Database *db) {
             addVisitToDB(db, v);
         } fclose(fVis);
     }
+
+    FILE *fPharm = fopen("pharmacy_db.txt", "r");
+    if (fPharm) {
+        while (fgets(line, sizeof(line), fPharm)) {
+            PharmacySale ps = {0}; rest = line;
+            token = parseDelimitedString(&rest, "|"); if (!token) continue; strcpy(ps.sale_id, token);
+            token = parseDelimitedString(&rest, "|"); if (token) strcpy(ps.patient_id, token);
+            token = parseDelimitedString(&rest, "|"); if (token) strcpy(ps.name, token);
+            token = parseDelimitedString(&rest, "|"); if (token) strcpy(ps.contact, token);
+            token = parseDelimitedString(&rest, "|"); if (token) strcpy(ps.email, token);
+            token = parseDelimitedString(&rest, "|"); if (token) strcpy(ps.medicines, token);
+            token = parseDelimitedString(&rest, "|"); if (token) ps.cost = atof(token);
+            token = parseDelimitedString(&rest, "|"); if (token) strcpy(ps.date, token);
+            addPharmacySaleToDB(db, ps);
+        } fclose(fPharm);
+    }
 }
 
 // ==========================================
@@ -515,6 +565,18 @@ void saveDatabase(Database *db) {
                     v.total_bill, v.is_paid, v.ward_days, v.is_discharged, v.ward_doc_visits, v.direct_admission);
         }
         fclose(fVis);
+    }
+
+    FILE *fPharm = fopen("pharmacy_db.txt", "w");
+    if (fPharm) {
+        for (int i = 0; i < db->pharm_count; i++) {
+            fprintf(fPharm, "%s|%s|%s|%s|%s|%s|%.2f|%s\n",
+                    db->pharmacy_sales[i].sale_id, db->pharmacy_sales[i].patient_id,
+                    db->pharmacy_sales[i].name, db->pharmacy_sales[i].contact,
+                    db->pharmacy_sales[i].email, db->pharmacy_sales[i].medicines,
+                    db->pharmacy_sales[i].cost, db->pharmacy_sales[i].date);
+        }
+        fclose(fPharm);
     }
     releaseLock();
 }
@@ -1480,7 +1542,10 @@ void doctorDashboard(Database *db, Doctor *doc) {
             printf("  ----------------------------------------------------------------------------------------\n");
             int found = 0;
             for (int i = 0; i < db->visit_count; i++) {
-                if (strcmp(db->visits[i].doc_id, doc->id) == 0 && db->visits[i].status == REQ_DOC) {
+                // Determine if patient is actively residing in a ward assigned to this doctor
+                int is_ward_admitted = (db->visits[i].status < COMPLETED && db->visits[i].is_discharged == 0 && strcmp(db->visits[i].ward_bed, "Outpatient") != 0 && strcmp(db->visits[i].ward_bed, "Discharged") != 0 && strlen(db->visits[i].ward_bed) > 0);
+                
+                if (strcmp(db->visits[i].doc_id, doc->id) == 0 && (db->visits[i].status == REQ_DOC || is_ward_admitted)) {
                     Patient *p = getPatientByID(db, db->visits[i].patient_id);
                     if(p) {
                         char statusText[50] = "Assigned to Doc";
@@ -1508,10 +1573,14 @@ void doctorDashboard(Database *db, Doctor *doc) {
             printf("\n--- ACTIVE QUEUE AVAILABLE FOR EVALUATION ---\n");
             int queueCount = 0;
             for (int i = 0; i < db->visit_count; i++) {
-                if (strcmp(db->visits[i].doc_id, doc->id) == 0 && db->visits[i].status == REQ_DOC) {
+                int is_ward_admitted = (db->visits[i].status < COMPLETED && db->visits[i].is_discharged == 0 && strcmp(db->visits[i].ward_bed, "Outpatient") != 0 && strcmp(db->visits[i].ward_bed, "Discharged") != 0 && strlen(db->visits[i].ward_bed) > 0);
+                
+                if (strcmp(db->visits[i].doc_id, doc->id) == 0 && (db->visits[i].status == REQ_DOC || is_ward_admitted)) {
                     Patient *p = getPatientByID(db, db->visits[i].patient_id);
                     if (p) {
-                        printf(" -> [Visit ID: %s] Patient Name: %s\n", db->visits[i].visit_id, p->name);
+                        char context[50] = "Waiting in Queue";
+                        if (is_ward_admitted) snprintf(context, sizeof(context), "Ward: %s", db->visits[i].ward_bed);
+                        printf(" -> [Visit ID: %s] Patient Name: %s (%s)\n", db->visits[i].visit_id, p->name, context);
                         queueCount++;
                     }
                 }
@@ -1533,17 +1602,21 @@ void doctorDashboard(Database *db, Doctor *doc) {
                 }
             }
             
-            if (v && v->status == REQ_DOC) {
+            int v_is_ward_admitted = (v && v->status < COMPLETED && v->is_discharged == 0 && strcmp(v->ward_bed, "Outpatient") != 0 && strcmp(v->ward_bed, "Discharged") != 0 && strlen(v->ward_bed) > 0);
+            
+            if (v && (v->status == REQ_DOC || v_is_ward_admitted)) {
                 Patient *p = getPatientByID(db, v->patient_id);
                 printf("\n--- CLINICAL EVALUATION ---\n");
-                printf("Enter Vitals (e.g., BP 120/80): "); safeInput(v->vitals, MAX_STR);
-                printf("Enter Symptoms: "); safeInput(v->symptoms, 200);
-                printf("Enter Diagnosis: "); safeInput(v->diagnosis, 200);
+                printf("Enter Vitals (Current: %s): ", strlen(v->vitals) > 0 ? v->vitals : "None"); safeInput(v->vitals, MAX_STR);
+                printf("Enter Symptoms (Current: %s): ", strlen(v->symptoms) > 0 ? v->symptoms : "None"); safeInput(v->symptoms, 200);
+                printf("Enter Diagnosis (Current: %s): ", strlen(v->diagnosis) > 0 ? v->diagnosis : "None"); safeInput(v->diagnosis, 200);
                 
-                // ALLERGY WARNING SYSTEM
+                // ALLERGY WARNING SYSTEM & MEDICINE APPENDING LOGIC
+                char new_meds[200];
                 while(1) {
-                    printf("Enter Medicines Prescribed: "); safeInput(v->medicines, 200);
-                    if (custom_strcasestr(p->allergies, "none") == NULL) {
+                    printf("Enter Additional Medicines Prescribed (Current: %s)\n(Type new meds to append, or 'None'): ", strlen(v->medicines) > 0 ? v->medicines : "None"); 
+                    safeInput(new_meds, 200);
+                    if (custom_strcasestr(p->allergies, "none") == NULL && custom_strcasestr(new_meds, "none") == NULL && strlen(new_meds) > 0) {
                         printf("\n[CRITICAL WARNING] Patient Allergies: %s\n", p->allergies);
                         printf("Does this prescription conflict with allergies? (1 = Yes, 0 = No): ");
                         if (getValidInt(0, 1) == 1) {
@@ -1554,10 +1627,27 @@ void doctorDashboard(Database *db, Doctor *doc) {
                     break;
                 }
                 
-                printf("Enter Doctor's Advice: "); safeInput(v->doc_advice, 200);
+                // Securely append the new medicines to the existing list avoiding buffer overflow
+                if (strlen(new_meds) > 0 && custom_strcasestr(new_meds, "none") == NULL) {
+                    if (strlen(v->medicines) == 0 || custom_strcasestr(v->medicines, "none") != NULL) {
+                        strcpy(v->medicines, new_meds); // Overwrite if currently empty or set to 'None'
+                    } else {
+                        if (strlen(v->medicines) + strlen(new_meds) + 5 < 200) {
+                            strcat(v->medicines, ", ");
+                            strcat(v->medicines, new_meds);
+                        }
+                    }
+                }
+                
+                printf("Enter Doctor's Advice (Current: %s): ", strlen(v->doc_advice) > 0 ? v->doc_advice : "None"); safeInput(v->doc_advice, 200);
 
                 // Check if the patient is already in a ward. Only ask to admit if they are an outpatient, discharged, or new.
-                if (strcmp(v->ward_bed, "Outpatient") == 0 || strcmp(v->ward_bed, "Discharged") == 0 || strlen(v->ward_bed) == 0) {
+                if (v_is_ward_admitted) {
+                    v->ward_doc_visits += 1; // Auto-increment ward visits when doctor conducts rounds
+                    printf("\n[INFO] Patient is currently in Ward/Bed: %s. (Ward assignment retained)\n", v->ward_bed);
+                    printf("[INFO] Doctor Ward Visits counter automatically updated to: %d\n", v->ward_doc_visits);
+                }
+                else if (strcmp(v->ward_bed, "Outpatient") == 0 || strcmp(v->ward_bed, "Discharged") == 0 || strlen(v->ward_bed) == 0) {
                     printf("\nAdmit Patient to Ward/Bed? (1 = Yes, 0 = No): ");
                     if(getValidInt(0, 1) == 1) {
                         printf("Specify Ward/Bed instructions: "); safeInput(v->ward_bed, 20);
@@ -1809,8 +1899,11 @@ void employeeDashboard(Database *db, Employee *emp) {
         printf(" 10. Assign Lab Assistant to a Patient\n");
         printf(" 11. View My Profile\n");
         printf(" 12. Update My Profile\n");
-        printf(" 13. Logout\nChoice: ");
-        choice = getValidInt(1, 13);
+        printf(" 13. View Available Patients (Ready for Visit)\n");
+        printf(" 14. Pharmacy Billing (Walk-ins & Patients)\n");
+        printf(" 15. View Pharmacy Sales Database\n");
+        printf(" 16. Logout\nChoice: ");
+        choice = getValidInt(1, 16);
 
         if (choice == 1) {
             registerPatient(db, emp->id); 
@@ -2235,9 +2328,27 @@ void employeeDashboard(Database *db, Employee *emp) {
                         if(getValidInt(0, 1) == 1) {
                             db->visits[i].is_paid = 1;
                             db->visits[i].status = COMPLETED; 
+                            
+                            // AUTO-LOGGING TO PHARMACY DATABASE FOR CLINIC PATIENTS
+                            if (db->visits[i].med_cost > 0 && strlen(db->visits[i].medicines) > 0 && custom_strcasestr(db->visits[i].medicines, "none") == NULL) {
+                                Patient *p = getPatientByID(db, db->visits[i].patient_id);
+                                if (p) {
+                                    PharmacySale ps = {0};
+                                    generateUniqueID("pharmacy_db.txt", "PHM", ps.sale_id);
+                                    getCurrentTimestamp(ps.date);
+                                    strcpy(ps.patient_id, p->id);
+                                    strcpy(ps.name, p->name);
+                                    strcpy(ps.contact, p->contact);
+                                    strcpy(ps.email, p->email);
+                                    strcpy(ps.medicines, db->visits[i].medicines);
+                                    ps.cost = db->visits[i].med_cost;
+                                    addPharmacySaleToDB(db, ps);
+                                }
+                            }
+                            
                             saveDatabase(db);
                             writeAuditLog(emp->id, "PROCESSED_PAYMENT", v_id);
-                            printf("[SUCCESS] Payment Collected.\n");
+                            printf("[SUCCESS] Payment Collected & Pharmacy DB Updated.\n");
                         } else {
                             printf("[WARNING] Payment not collected. Invoice will be marked as UNPAID.\n");
                         }
@@ -2489,7 +2600,85 @@ void employeeDashboard(Database *db, Employee *emp) {
             }
             pauseSystem();
         }
-    } while (choice != 13); // UPDATED BOUNDARY
+        else if (choice == 13) {
+            printf("\n--- AVAILABLE PATIENTS (NO ONGOING VISITS) ---\n");
+            printf("  %-10s | %-20s | %-15s | %-25s\n", "Patient ID", "Name", "Phone", "Email");
+            printf("  --------------------------------------------------------------------------------\n");
+            int pCount = 0;
+            for(int i = 0; i < db->pat_count; i++) {
+                if(db->patients[i].is_active) {
+                    int has_ongoing = 0;
+                    // Check if patient is in any active visit state
+                    for(int j = 0; j < db->visit_count; j++) {
+                        if(strcmp(db->visits[j].patient_id, db->patients[i].id) == 0 && db->visits[j].status < COMPLETED) {
+                            has_ongoing = 1; break;
+                        }
+                    }
+                    if (!has_ongoing) {
+                        printf("  %-10s | %-20.20s | %-15.15s | %-25.25s\n", 
+                               db->patients[i].id, db->patients[i].name, db->patients[i].contact, db->patients[i].email);
+                        pCount++;
+                        if (pCount % 15 == 0) pauseSystem();
+                    }
+                }
+            }
+            if (pCount == 0) {
+                printf("  [INFO] No available patients found. All active patients are currently in an ongoing visit.\n");
+            } else {
+                printf("\n  Total: %d available patient(s).\n", pCount);
+            }
+            pauseSystem();
+        }
+        else if (choice == 14) {
+            int keep_going = 1;
+            while(keep_going) {
+                printf("\n--- STANDALONE PHARMACY BILLING ---\n");
+                PharmacySale ps = {0};
+                generateUniqueID("pharmacy_db.txt", "PHM", ps.sale_id);
+                getCurrentTimestamp(ps.date);
+
+                printf("Is this for a Walk-in or a Registered Patient?\n(1) Walk-in Customer, (2) Registered Patient\nChoice: ");
+                int pt_type = getValidInt(1, 2);
+
+                if (pt_type == 2) {
+                    printf("Enter Patient ID: "); safeInput(ps.patient_id, ID_LEN);
+                    Patient *p = getPatientByID(db, ps.patient_id);
+                    if (p) {
+                        strcpy(ps.name, p->name);
+                        strcpy(ps.contact, p->contact);
+                        strcpy(ps.email, p->email);
+                        printf("[INFO] Linked to Patient Profile: %s\n", ps.name);
+                    } else {
+                        printf("[ERROR] Patient ID not found. Reverting to Walk-in.\n");
+                        strcpy(ps.patient_id, "WALK-IN");
+                        strcpy(ps.email, "NA");
+                        printf("Enter Customer Name: "); safeInput(ps.name, MAX_STR);
+                        printf("Enter Phone Number: "); safeInput(ps.contact, 20);
+                    }
+                } else {
+                    strcpy(ps.patient_id, "WALK-IN");
+                    strcpy(ps.email, "NA");
+                    printf("Enter Customer Name: "); safeInput(ps.name, MAX_STR);
+                    printf("Enter Phone Number: "); safeInput(ps.contact, 20);
+                }
+
+                printf("Enter the Medicines / Pharmacy items: "); safeInput(ps.medicines, 200);
+                printf("Enter Total Cost of items ($): "); 
+                char buf[50]; safeInput(buf, 50); ps.cost = atof(buf);
+
+                addPharmacySaleToDB(db, ps);
+                saveDatabase(db);
+                writeAuditLog(emp->id, "MANUAL_PHARMACY_SALE", ps.sale_id);
+                printf("\n[SUCCESS] Pharmacy sale recorded! ID: %s | Total: $%.2f\n", ps.sale_id, ps.cost);
+
+                printf("\nProcess another pharmacy bill? (1 = Yes, 0 = No): ");
+                keep_going = getValidInt(0, 1);
+            }
+        }
+        else if (choice == 15) {
+            viewPharmacyDatabase(db);
+        }
+    } while (choice != 16); 
 }
 
 // ==========================================
@@ -2805,6 +2994,36 @@ void patientDashboard(Database *db, Patient *pat) {
 
 
 
+void viewPharmacyDatabase(Database *db) {
+    printf("\n--- COMPREHENSIVE PHARMACY SALES DATABASE ---\n");
+    printf(" %-10s | %-12s | %-15s | %-18s | %-20s | %-8s | %s\n", 
+           "Sale ID", "Patient ID", "Name", "Contact/Email", "Medicines", "Cost", "Date");
+    printf("----------------------------------------------------------------------------------------------------------------------\n");
+    if (db->pharm_count == 0) {
+        printf("  [INFO] No pharmacy sales recorded yet.\n");
+    } else {
+        for (int i = 0; i < db->pharm_count; i++) {
+            char contact_disp[45];
+            if (strcmp(db->pharmacy_sales[i].patient_id, "WALK-IN") == 0) {
+                snprintf(contact_disp, sizeof(contact_disp), "%s", db->pharmacy_sales[i].contact);
+            } else {
+                snprintf(contact_disp, sizeof(contact_disp), "%s", db->pharmacy_sales[i].email);
+            }
+            
+            printf(" %-10s | %-12s | %-15.15s | %-18.18s | %-20.20s | $%-.2f | %s\n",
+                   db->pharmacy_sales[i].sale_id, db->pharmacy_sales[i].patient_id,
+                   db->pharmacy_sales[i].name, contact_disp,
+                   db->pharmacy_sales[i].medicines, db->pharmacy_sales[i].cost,
+                   db->pharmacy_sales[i].date);
+            
+            if ((i + 1) % 15 == 0) pauseSystem();
+        }
+        printf("----------------------------------------------------------------------------------------------------------------------\n");
+        printf("Total Recorded Sales: %d\n", db->pharm_count);
+    }
+    pauseSystem();
+}
+
 void adminDashboard(Database *db, Admin *admin) {
     int choice;
     do {
@@ -2818,10 +3037,11 @@ void adminDashboard(Database *db, Admin *admin) {
         printf("6. Manage Directory (View/Delete with Pagination)\n");
         printf("7. Update User Details (Fix Typos)\n");
         printf("8. View System Logs (Audit)\n");
-        printf("9. View My Profile\n");       // NEW
-        printf("10. Update My Profile\n");    // NEW
-        printf("11. Logout\nChoice: ");       // CHANGED to 11
-        choice = getValidInt(1, 11);
+        printf("9. View My Profile\n");       
+        printf("10. Update My Profile\n");    
+        printf("11. View Pharmacy Sales DB\n");
+        printf("12. Logout\nChoice: ");       
+        choice = getValidInt(1, 12);
 
         if (choice == 1) registerAdmin(db);
         else if (choice == 2) registerEmployee(db, admin->id);
@@ -2884,22 +3104,27 @@ void adminDashboard(Database *db, Admin *admin) {
             }
             pauseSystem();
         }
-    } while (choice != 11);
+        else if (choice == 11) {
+            viewPharmacyDatabase(db);
+        }
+    } while (choice != 12);
 }
 
 // ==========================================
 // 21. THE FULLY INTEGRATED MAIN GATEWAY
 // ==========================================
-int main() {
+void main() {
     Database db;
     // Explicitly nullify all pointers to guarantee Valgrind safety
     db.admins = NULL; db.employees = NULL; db.doctors = NULL;
     db.lab_assts = NULL; db.patients = NULL; db.visits = NULL;
+    db.pharmacy_sales = NULL;
     
     // Explicitly zero capacities and counts
     db.admin_count = 0; db.admin_cap = 0; db.emp_count = 0; db.emp_cap = 0;
     db.doc_count = 0; db.doc_cap = 0; db.lab_count = 0; db.lab_cap = 0;
     db.pat_count = 0; db.pat_cap = 0; db.visit_count = 0; db.visit_cap = 0;
+    db.pharm_count = 0; db.pharm_cap = 0;
 
     loadDatabase(&db);
 
@@ -2960,6 +3185,4 @@ int main() {
             printf("[SYSTEM] Memory cleared. Goodbye.\n");
         }
     } while (role != 6);
-
-    return 0;
 }
