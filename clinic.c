@@ -2240,14 +2240,23 @@ void employeeDashboard(Database *db, Employee *emp) {
                             printf("[SYSTEM] Billing process cancelled. Returning to menu without modifications.\n");
                             break;
                         } else if (action == 3) {
-                            // Condition: Can only cancel if the patient hasn't been evaluated by the doctor yet
-                            if (db->visits[i].status == REQ_DOC) {
+                            // Condition: Check if patient has already interacted with Doc, Lab, or Ward
+                            int visited_doc = (strlen(db->visits[i].doc_advice) > 0 || strlen(db->visits[i].vitals) > 0);
+                            int visited_lab = (strlen(db->visits[i].test_results) > 0);
+                            int in_ward = (strcmp(db->visits[i].ward_bed, "Outpatient") != 0 && strcmp(db->visits[i].ward_bed, "Discharged") != 0 && strlen(db->visits[i].ward_bed) > 0);
+
+                            if (visited_doc || visited_lab || in_ward) {
+                                printf("\n[ERROR] Cannot abort visit. Patient has already ");
+                                if (visited_doc && visited_lab) printf("visited the doctor and lab.\n");
+                                else if (visited_doc) printf("visited the doctor.\n");
+                                else if (visited_lab) printf("visited the lab.\n");
+                                else if (in_ward) printf("been admitted to the ward.\n");
+                                printf("They must proceed to billing checkout.\n");
+                            } else {
                                 db->visits[i].status = CANCELLED_BY_PATIENT;
                                 saveDatabase(db);
                                 writeAuditLog(emp->id, "CANCELLED_VISIT", v_id);
-                                printf("[SUCCESS] Visit permanently cancelled/aborted.\n");
-                            } else {
-                                printf("[ERROR] Cannot cancel visit. Patient has already received clinical evaluation and must process the bill.\n");
+                                printf("\n[SUCCESS] Visit permanently cancelled/aborted.\n");
                             }
                             break;
                         }
@@ -2263,16 +2272,26 @@ void employeeDashboard(Database *db, Employee *emp) {
                         }
 
                         printf("\n--- PRE-BILLING CLINICAL SUMMARY ---\n");
-                        printf("Doctor's Advice: %s\n", db->visits[i].doc_advice);
-                        if (strcmp(db->visits[i].tests_required, "None") != 0) {
-                            printf("Lab Tests Conducted/Assigned: %s\n", db->visits[i].tests_required);
-                            printf("Lab Results: %s\n", db->visits[i].test_results);
+                        
+                        int has_doc = (strcmp(db->visits[i].doc_id, "PENDING") != 0);
+
+                        if (has_doc) {
+                            printf("Doctor's Advice: %s\n", db->visits[i].doc_advice);
+                        }
+                        
+                        // Show all appended lab tests cleanly, hide results line to prevent visual clutter
+                        if (strcmp(db->visits[i].tests_required, "None") != 0 && strlen(db->visits[i].tests_required) > 0) {
+                            printf("Lab Tests Conducted: %s\n", db->visits[i].tests_required);
                         }
                         printf("------------------------------------\n");
 
-                        printf("Doctor's Prescribed Medicines: %s\n", db->visits[i].medicines);
+                        if (has_doc) {
+                            printf("Doctor's Prescribed Medicines: %s\n", db->visits[i].medicines);
+                            printf("Enter the final Pharmacy items purchased (Leave blank to keep prescription): ");
+                        } else {
+                            printf("Enter Pharmacy items purchased (Type 'None' or leave blank to skip): ");
+                        }
                         
-                        printf("Enter the final Pharmacy items purchased (Leave blank to keep prescription): ");
                         char extra_meds[200];
                         safeInput(extra_meds, 200);
                         if (strlen(extra_meds) > 0 && custom_strcasestr(extra_meds, "none") == NULL) {
@@ -2281,25 +2300,37 @@ void employeeDashboard(Database *db, Employee *emp) {
                         }
 
                        // NEW WARD & EMERGENCY BILLING LOGIC
-                        printf("\nEnter Doctor Base Consultation Fee Rate ($): ");
-                        char buf[50]; safeInput(buf, 50);
-                        double base_doc_fee = atof(buf);
-                        
+                        double base_doc_fee = 0.0;
                         double initial_consult = 0.0;
-                        if (!db->visits[i].direct_admission) {
-                            initial_consult = base_doc_fee;
-                            printf(" -> Initial Consultation Fee (Non-Direct): $%.2f\n", initial_consult);
-                        } else {
-                            printf(" -> [Direct Ward Admission] Initial Consultation Fee Waived.\n");
-                        }
+                        double ward_doc_fee = 0.0;
+                        char buf[50];
                         
-                        double ward_doc_fee = db->visits[i].ward_doc_visits * base_doc_fee;
-                        if (db->visits[i].ward_doc_visits > 0) {
-                            printf(" -> Ward Visits Fee (%d visits @ $%.2f): $%.2f\n", db->visits[i].ward_doc_visits, base_doc_fee, ward_doc_fee);
+                        // Completely hide consultation fee prompts if they never saw a doctor
+                        if (has_doc) {
+                            printf("\nEnter Doctor Base Consultation Fee Rate ($): ");
+                            safeInput(buf, 50);
+                            base_doc_fee = atof(buf);
+                            
+                            if (!db->visits[i].direct_admission) {
+                                initial_consult = base_doc_fee;
+                                printf(" -> Initial Consultation Fee (Non-Direct): $%.2f\n", initial_consult);
+                            } else {
+                                printf(" -> [Direct Ward Admission] Initial Consultation Fee Waived.\n");
+                            }
+                            
+                            ward_doc_fee = db->visits[i].ward_doc_visits * base_doc_fee;
+                            if (db->visits[i].ward_doc_visits > 0) {
+                                printf(" -> Ward Visits Fee (%d visits @ $%.2f): $%.2f\n", db->visits[i].ward_doc_visits, base_doc_fee, ward_doc_fee);
+                            }
                         }
 
-                        printf("\nEnter Total Pharmacy Cost ($): "); 
-                        safeInput(buf, 50); db->visits[i].med_cost = atof(buf);
+                        // Only ask for pharmacy cost if they actually bought medicines
+                        if (has_doc || (strlen(db->visits[i].medicines) > 0 && custom_strcasestr(db->visits[i].medicines, "none") == NULL)) {
+                            printf("\nEnter Total Pharmacy Cost ($): "); 
+                            safeInput(buf, 50); db->visits[i].med_cost = atof(buf);
+                        } else {
+                            db->visits[i].med_cost = 0.0;
+                        }
                         
                         if (strcmp(db->visits[i].tests_required, "None") != 0 && strcmp(db->visits[i].lab_id, "PENDING") != 0) {
                             printf("Enter Lab Cost ($): "); 
@@ -2517,23 +2548,28 @@ void employeeDashboard(Database *db, Employee *emp) {
                                     }
                                 }
                                 if (l_found) {
-                                    printf("Enter tests to assign/add (e.g., Blood Test, X-Ray): ");
+                                    printf("\nCurrent Tests Requested: %s\n", db->visits[i].tests_required);
+                                    printf("Enter additional tests to assign (Press Enter to just keep current tests): ");
                                     char new_test[100];
                                     safeInput(new_test, 100);
                                     
-                                    // Append or Overwrite logic for multiple test assignments
-                                    if (strcmp(db->visits[i].tests_required, "None") == 0 || strlen(db->visits[i].tests_required) == 0) {
-                                        strcpy(db->visits[i].tests_required, new_test);
-                                    } else {
-                                        strncat(db->visits[i].tests_required, ", ", 199 - strlen(db->visits[i].tests_required));
-                                        strncat(db->visits[i].tests_required, new_test, 199 - strlen(db->visits[i].tests_required));
+                                    // Only update if the employee actually typed something new to prevent duplicates
+                                    if (strlen(new_test) > 0) {
+                                        if (strcmp(db->visits[i].tests_required, "None") == 0 || strlen(db->visits[i].tests_required) == 0) {
+                                            strcpy(db->visits[i].tests_required, new_test);
+                                        } else {
+                                            if (strlen(db->visits[i].tests_required) + strlen(new_test) + 5 < 200) {
+                                                strcat(db->visits[i].tests_required, ", ");
+                                                strcat(db->visits[i].tests_required, new_test);
+                                            }
+                                        }
                                     }
                                     
                                     db->visits[i].status = REQ_LAB; // Ensure it routes back to lab queue
                                     strcpy(db->visits[i].lab_id, l_id);
                                     saveDatabase(db);
                                     writeAuditLog(emp->id, "ASSIGNED_LAB_ASST", v_id);
-                                    printf("[SUCCESS] Patient assigned to Lab Assistant %s for tests: %s.\n", l_id, new_test);
+                                    printf("\n[SUCCESS] Patient assigned to Lab Assistant %s. Final Tests: %s.\n", l_id, db->visits[i].tests_required);
                                 } else {
                                     printf("[ERROR] Invalid Lab Assistant ID.\n");
                                 }
@@ -2641,6 +2677,20 @@ void employeeDashboard(Database *db, Employee *emp) {
                 int pt_type = getValidInt(1, 2);
 
                 if (pt_type == 2) {
+                    printf("\n--- REGISTERED PATIENT LIST ---\n");
+                    int pCount = 0;
+                    for (int i = 0; i < db->pat_count; i++) {
+                        if (db->patients[i].is_active) {
+                            printf("  ID: %-10s | Name: %-15s | Phone: %-15s | Status: Active\n", 
+                                   db->patients[i].id, db->patients[i].name, db->patients[i].contact);
+                            pCount++;
+                        }
+                    }
+                    if (pCount == 0) {
+                        printf("  [INFO] No registered patients found.\n");
+                    }
+                    printf("-------------------------------\n");
+
                     printf("Enter Patient ID: "); safeInput(ps.patient_id, ID_LEN);
                     Patient *p = getPatientByID(db, ps.patient_id);
                     if (p) {
@@ -2746,11 +2796,12 @@ void labAssistantDashboard(Database *db, LabAssistant *lab) {
         printf("Welcome, %s\n\n", lab->name);
         printf("1. View Pending Tests (REQ_LAB)\n");
         printf("2. Input Test Results\n");
-        printf("3. Search Old Patient & View History\n");
-        printf("4. View My Profile\n");           // NEW: View Profile Option
-        printf("5. Update My Profile\n");         // SHIFTED: Now option 5
-        printf("6. Logout\nChoice: ");            // SHIFTED: Now option 6
-        choice = getValidInt(1, 6);               // UPDATED: Max choice is now 6
+        printf("3. Update Lab Report\n");
+        printf("4. Search Old Patient & View History\n");
+        printf("5. View My Profile\n");
+        printf("6. Update My Profile\n");
+        printf("7. Logout\nChoice: ");
+        choice = getValidInt(1, 7);
 
         if (choice == 1) {
             printf("\n--- PENDING LAB QUEUE ---\n");
@@ -2803,7 +2854,19 @@ void labAssistantDashboard(Database *db, LabAssistant *lab) {
             if (v) {
                 printf("\n--- ENTER LAB RESULTS ---\n");
                 printf("Requested Tests: %s\n", v->tests_required);
-                printf("Enter Official Results: "); safeInput(v->test_results, 200);
+                
+                char new_results[200];
+                printf("Enter Official Results: "); safeInput(new_results, 200);
+                
+                // Securely append results to prevent data loss across multiple lab tests
+                if (strlen(v->test_results) == 0 || custom_strcasestr(v->test_results, "None") != NULL || strcmp(v->test_results, "Pending") == 0) {
+                    strcpy(v->test_results, new_results);
+                } else {
+                    if (strlen(v->test_results) + strlen(new_results) + 5 < 200) {
+                        strcat(v->test_results, " | ");
+                        strcat(v->test_results, new_results);
+                    }
+                }
                 
                 strcpy(v->lab_id, lab->id); // Log which assistant did the test
                 v->status = REQ_BILL;       // Route back to Employee for billing
@@ -2818,6 +2881,61 @@ void labAssistantDashboard(Database *db, LabAssistant *lab) {
             pauseSystem();
         }
         else if (choice == 3) {
+            printf("\n--- YOUR PREVIOUSLY PROCESSED LAB REPORTS ---\n");
+            int count = 0;
+            for (int i = 0; i < db->visit_count; i++) {
+                // Ensure the visit was processed by THIS assistant and results were already given (status >= REQ_BILL)
+                if (strcmp(db->visits[i].lab_id, lab->id) == 0 && db->visits[i].status >= REQ_BILL) {
+                    Patient *p = getPatientByID(db, db->visits[i].patient_id);
+                    if (p) {
+                        printf("  Visit ID: %-10s | Patient: %-15s | Date: %s\n", db->visits[i].visit_id, p->name, db->visits[i].date);
+                        count++;
+                    }
+                }
+            }
+            if (count == 0) {
+                printf("  [INFO] No processed lab reports found to update.\n");
+                pauseSystem();
+                continue;
+            }
+            printf("-------------------------------------------\n");
+
+            char v_id[ID_LEN];
+            printf("\nEnter Visit ID to Update Lab Report: "); safeInput(v_id, ID_LEN);
+            
+            VisitRecord *v = NULL;
+            for (int i = 0; i < db->visit_count; i++) {
+                if (strcmp(db->visits[i].visit_id, v_id) == 0 && strcmp(db->visits[i].lab_id, lab->id) == 0 && db->visits[i].status >= REQ_BILL) {
+                    v = &db->visits[i];
+                    break;
+                }
+            }
+            
+            if (v) {
+                char tmp[250];
+                int is_updated = 0;
+                printf("\n--- UPDATING LAB REPORT (Press Enter to keep current) ---\n");
+                
+                printf("Current Tests Requested/Conducted: %s\nNew Tests Conducted: ", v->tests_required);
+                safeInput(tmp, 200); if (strlen(tmp) > 0 && strcmp(v->tests_required, tmp) != 0) { strcpy(v->tests_required, tmp); is_updated = 1; }
+                
+                printf("Current Official Results: %s\nNew Official Results: ", v->test_results);
+                safeInput(tmp, 200); if (strlen(tmp) > 0 && strcmp(v->test_results, tmp) != 0) { strcpy(v->test_results, tmp); is_updated = 1; }
+                
+                if (is_updated) {
+                    saveDatabase(db);
+                    exportLabReport(db, v); // Instantly overwrite the text file report
+                    writeAuditLog(lab->id, "UPDATED_LAB_REPORT_FULL", v->visit_id);
+                    printf("[SUCCESS] Lab report updated & document re-exported.\n");
+                } else {
+                    printf("[INFO] No changes were made to the lab report.\n");
+                }
+           } else { 
+                printf("[ERROR] Visit ID not found, incomplete, or unauthorized.\n");
+           }
+            pauseSystem();
+        }
+        else if (choice == 4) {
             printHeader("SEARCH MY HISTORICAL PATIENTS");
             
             // Show only unique patients that have previously been processed by this specific lab assistant
@@ -2873,14 +2991,14 @@ void labAssistantDashboard(Database *db, LabAssistant *lab) {
                 pauseSystem();
             }
         }
-        else if (choice == 4) { 
+        else if (choice == 5) { 
             // NEW: Displays all Lab Assistant properties from the struct
             printHeader("MY PROFILE");
             printf("ID: %s\nName: %s\nEmail: %s\nQualification: %s\nSpecialization: %s\nContact Phone: %s\n",
                    lab->id, lab->name, lab->email, lab->qualification, lab->specialization, lab->contact);
             pauseSystem();
         }
-        else if (choice == 5) { 
+        else if (choice == 6) { 
             int keep_updating = 1; 
             
             while (keep_updating) {
@@ -2939,7 +3057,7 @@ void labAssistantDashboard(Database *db, LabAssistant *lab) {
             }
             pauseSystem();
         }   
-    } while (choice != 6); // UPDATED: Loop terminates on 6 (Logout)
+    } while (choice != 7); 
 }
 
 void patientDashboard(Database *db, Patient *pat) {
