@@ -1,1 +1,2 @@
-1|DOC/001|Dr. BJS |bjs@gmail.com|292138|MBBS|General|101|1234567899
+1|DOC/001|D1|d1@gmail.com|7A7978|MBBS|Orthopedics|101|12345
+1|DOC/002|D2|d2@gmail.com|7A7978|MD|General|102|123456

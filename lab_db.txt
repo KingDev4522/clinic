@@ -1,0 +1,2 @@
+1|LAB/001|LA1|la1@gmail.com|7A7978|B.Sc|Blood Test|14785
+1|LAB/002|LA2|la2@gmail.com|7A7978|M.Sc|ECG|14723
