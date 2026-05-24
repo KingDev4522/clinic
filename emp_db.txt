@@ -1,1 +1,2 @@
-1|EMP/001|Debayan Saha|debayan@gmail.com|2F2E292A322A25|Night|Receptionist
+1|EMP/001|E1|e1@gmail.com|7A7978|Morning|Sr.Receptionist
+1|EMP/002|E2|e2@gmail.com|7A7978|Night|Jr.Receptionist
