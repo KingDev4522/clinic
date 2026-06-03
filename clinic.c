@@ -3255,7 +3255,7 @@ void main() {
 
     int role;
     do {
-        printHeader("ENTERPRISE CLINIC MANAGEMENT");
+        printHeader("CITY MULTI-SPECIALTY CLINIC MANAGEMENT");
         printf("1. Admin Login\n");
         printf("2. Doctor Login\n");
         printf("3. Employee (Reception) Login\n");
